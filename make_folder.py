@@ -17,7 +17,7 @@ subdirs = [
     "data_analysis",
     "languages",
     "sw_engineering",
-    "data_stacks"
+    "data_stacks",
 ]
 
 # 루트 디렉토리를 생성
