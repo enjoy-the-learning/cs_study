@@ -1166,16 +1166,231 @@ spark.sql.adaptive.shuffle.targetPostShuffleInputSize=64MB
 
 ### 5. 조인과 데이터 스큐(Data Skew)
 
-- Broadcast Join과 Shuffle Hash Join 차이점? 언제 Broadcast Join을 강제로 써야 할까?
+##### 5 - 1. Broadcast Join과 Shuffle Hash Join 차이점? 언제 Broadcast Join을 강제로 써야 할까?
 
-- 데이터 스큐가 생기는 원인과 해결책? (Salting, Skew Join 등 실무 경험 녹여서)
+1. Broadcast Join vs Shuffle Hash Join
 
-- Skew가 심각한 Task의 리소스는 어떻게 잡아야 하나? (Executor Memory, Task 병렬도 등)
+- Broadcast Join: 작은 테이블 하나를 전체 Executor에 "방송"해서 큰 테이블을 각 Task가 로컬에서 조인하는 방식
+    - 장점: Shuffle 발생 안 함 → 성능 매우 빠름, 큰 테이블 쪼개기 없이 로컬에서 바로 조인 가능
+    - 단점: Broadcast 대상 테이블이 너무 크면 OOM 발생 위험, Executor 메모리에 테이블을 담을 수 있어야 함
+
+- 사용 조건: Broadcast 대상 테이블이 10MB ~ 수백 MB 이하, Executor 메모리에 올릴 수 있어야 함
+
+- 강제로 사용하는 법
+
+```python
+broadcast(df_small)
+```
+
+```sql
+SELECT /*+ BROADCAST(df_small) */ ...
+```
+
+- 자동 Broadcast 조건
+
+```bash
+spark.sql.autoBroadcastJoinThreshold = 10MB   # 이 값보다 작으면 자동 Broadcast Join
+```
+
+- Shuffle Hash Join: 두 테이블 모두 키 기준으로 Shuffle => 같은 키끼리 같은 파티션으로 모은 뒤 => 각 파티션 내에서 조인
+    - 장점: 테이블 크기에 제한 없음, 대용량 조인에 적합
+    - 단점: Shuffle I/O 비용 큼, Skew 발생 위험 큼 (키가 한쪽에 몰리면 특정 Task에 병목)
 
 
-6. 클러스터와 리소스 관리
+##### 5 - 2. 데이터 스큐가 생기는 원인과 해결책? (Salting, Skew Join 등 실무 경험 녹여서)
 
-- YARN, Standalone, Kubernetes 클러스터 매니저의 차이점? Spark가 Kubernetes 환경에서 가지는 이점은?
+- Data Skew
+    - 특정 키가 너무 많아서 몇몇 Task만 엄청 느려지는 현상
+    - 대부분 Task는 몇 초 만에 끝났는데, 특정 Task 하나만 몇 분~몇 시간 걸리는 케이스 → Job 전체가 늦어짐
+
+- 원인
+    - 불균형한 키 분포
+        - 예: groupByKey() 했는데 "null" 키가 전체의 70%인 경우
+    - Hot Key 존재: 특정 제품, 유저, 시간대에 데이터 몰림
+        - 예: user_id = 'admin' 같은 특이 케이스
+    - Join 시 공통 키가 집중
+        - 예: "대한민국"이 모든 행에 있음 → "대한민국" 파티션만 폭발
+
+- 데이터 스큐 해결 전략
+
+1. Salting 기법 (핫 키 분산): Hot Key에 랜덤 prefix 붙여서 분산
+    - user_id = "admin" → "admin_1", "admin_2", ..., "admin_n"
+    - Join Key를 인위적으로 확장해서 분산 처리 유도하는 방법.
+
+- 예시 (PySpark)
+
+```python
+from pyspark.sql.functions import col, concat_ws, lit, rand
+
+# 1. 큰 테이블에 salt 붙이기
+df_large_salted = df_large.withColumn("salt", (rand() * 5).cast("int"))
+df_large_salted = df_large_salted.withColumn("join_key_salted", concat_ws("_", col("join_key"), col("salt")))
+
+# 2. 작은 테이블에 salt 확장
+from pyspark.sql.functions import explode, array
+
+df_small_salted = df_small.withColumn("salt", explode(array([lit(i) for i in range(5)])))
+df_small_salted = df_small_salted.withColumn("join_key_salted", concat_ws("_", col("join_key"), col("salt")))
+
+# 3. 조인
+df_result = df_large_salted.join(df_small_salted, on="join_key_salted", how="inner")
+```
+
+
+2. Skew Join 전략
+
+- Spark 3.x부터 지원하는 Skew Join Detection + 자동 처리 (AQE) => Spark가 자동으로 skew 파티션을 쪼개서 분산 처리함.
+
+```bash
+spark.sql.adaptive.enabled=true
+spark.sql.adaptive.skewJoin.enabled=true
+```
+
+3. Selective Filtering + Join 순서 변경
+
+- 큰 테이블 필터 먼저 해서 줄인 다음에 Join 수행
+
+- Join 순서를 바꿔서 Hot Key 집중을 피함
+
+
+
+##### 5 - 3. Skew가 심각한 Task의 리소스는 어떻게 잡아야 하나? (Executor Memory, Task 병렬도 등)
+
+1. Executor Memory 증가
+
+```bash
+spark.executor.memory=8g
+spark.executor.memoryOverhead=1g
+```
+
+- Skew Task는 엄청난 중간 데이터 생성 가능 => 메모리가 넉넉하지 않으면 OOM + Spill 발생
+
+2. Task 병렬도 조정
+
+- Skew 파티션을 쪼갤 수 있도록 `spark.sql.shuffle.partitions` 값을 늘려줘야 함
+    - 기본 200은 보통 데이터에 비해 부족함
+
+```bash
+spark.sql.shuffle.partitions=800
+```
+
+
+
+3. 특정 Key 분리 처리
+
+- "대한민국"처럼 정말 특이한 키가 있다면, 해당 Key만 별도로 처리하고 Union하는 전략도 있음.
+
+
+
+### 6. 클러스터와 리소스 관리
+
+- YARN, Standalone, Kubernetes 클러스터 매니저의 차이점과 Spark가 Kubernetes 환경에서 가지는 이점
+
+- YARN, Standalone, Kubernetes 클러스터 매니저
+    - 공통점: 모두 클러스터 리소스 할당 + Executor 스케줄링 역할 수행
+    - Spark Application = Driver + Executor 조합으로 실행됨
+    - 차이는 리소스를 누가 어떻게 배분하느냐에서 생김
+
+- YARN (Hadoop Yarn Resource Manager)
+    - 탄생 배경: Hadoop 에코 기반에서 사용됨
+    - 리소스 관리: YARN이 컨테이너로 리소스를 할당함
+    - 인프라 의존: Hadoop 클러스터 필요
+    - 장점: 대규모 배치에 강하고 안정성 높음
+    - 단점: 설치 복잡하고 Kubernetes보다 유연성 낮음
+    - 대부분의 온프레미스 빅데이터 시스템은 아직 YARN 기반 많이 사용함
+    - Spark UI 자동 연결, External Shuffle, 동적 리소스 관리 등 지원이 잘 되어 있음
+
+- Standalone Mode
+    - 탄생 배경: Spark 기본 내장 클러스터 매니저
+    - 리소스 관리: Spark 자체가 리소스 스케줄링
+    - 인프라 의존: 거의 없음 (로컬, 간단한 실험에 적합)
+    - 장점: 설정 간단, 빠른 테스트 가능
+    - 단점: 분산 시스템에선 기능 부족 (HA, 장애 복구 등 미흡)
+
+- Kubernetes
+    - 탄생 배경: Cloud Native 환경 대응
+    - 리소스 관리: K8s가 Executor/Driver를 Pod로 관리
+    - 장점: 컨테이너화된 배포, 동적 확장, GitOps 연계 쉬움
+    - 단점: 설정 복잡도 높고, Spark 기능 중 일부는 미지원도 있음 (예: External Shuffle 기본 없음)
+
+- Spark가 Kubernetes 환경에서 가지는 이점
+이점	설명
+동적 리소스 확장/축소	K8s 오토스케일링 연동 가능 (HPA)
+ArgoCD + GitOps 연계	GitHub에서 DAG 관리 → 자동 배포 가능
+컨테이너 기반 실행	Spark Image 관리 용이 (DockerHub 연동)
+복잡한 MSA 환경에 유리	Kafka, Flink, API 서버 등 다양한 컴포넌트 연동 쉬움
+멀티 클러스터/멀티테넌시 관리	GKE/EKS 등 퍼블릭 클라우드 인프라와 잘 맞음
+✅ [2] Executor 개수 / 코어 / 메모리 조합 기준
+▶ 기본 공식
+text
+복사
+편집
+총 Executor 수 = (전체 코어 수) / (Executor당 코어 수)
+✅ 실무에서 고려하는 주요 변수들
+변수	설명
+데이터 크기	수십 GB → 소형 Executor, 수 TB → 대형 Executor
+Job 타입	Batch (메모리 중심) / Streaming (지속적 처리)
+Shuffle 발생 여부	Shuffle이 많으면 Executor 수 늘리기 / 메모리도 넉넉히
+GC 문제	코어 수 과하면 GC Pause 시간 길어짐 → 4~5개 이하 권장
+Task 병렬도	spark.sql.shuffle.partitions와 연동해서 계산
+Node Spec	클러스터 노드가 8코어/32GB라면 Executor 2개씩 (코어 4, 메모리 14~15GB) 추천
+▶ 예시 세팅 (GKE 기준)
+bash
+복사
+편집
+spark.executor.instances=8
+spark.executor.cores=4
+spark.executor.memory=8g
+spark.executor.memoryOverhead=1g
+✔️ 메모리 오버헤드는 꼭 넉넉히! (네트워크 + shuffle buffer 포함되기 때문)
+✔️ 한 노드당 12 Executor, 코어는 35개 선에서 시작해서 튜닝
+
+✅ [3] Dynamic Resource Allocation이 병목을 만드는 케이스
+😵 대표적인 비효율 상황
+🔴 1. Executor 생성/종료에 시간이 오래 걸리는 환경
+예: Kubernetes에서 Executor 생성에 10~30초 소요
+→ 스파크는 Task 대기 중인데 Executor는 아직 생성 중
+→ 빈틈 많은 리소스 운영 → 성능 저하
+
+🔴 2. Shuffle-heavy 작업에서 Executor가 죽으면...
+Shuffle 파일은 Executor 로컬에 저장
+→ Executor가 사라지면 Shuffle 재다운로드 필요
+→ I/O 폭증 + 성능 저하
+
+🔧 해결법:
+
+YARN은 External Shuffle Service로 해결 가능
+
+Kubernetes는 기본 지원 ❌ → 직접 설정하거나 피하는 게 안전
+
+🔴 3. Streaming / Long-running Job
+Executor가 계속 늘고 줄면
+→ State 유지 어려움 + Latency 불안정
+→ 특히 Kafka, Flink 연동 시 심각
+
+🔴 4. Data Skew 상태에서 병목 Task가 죽었다 살아남
+특정 키에 Task가 몰려있는데
+Dynamic Allocation이 그 Task가 있는 Executor를 없애버림
+→ 같은 Skew Task 재시작 → 또 죽음 → 무한 반복
+
+🛠 실전 대처법
+전략	설명
+Static Executor 할당	spark.dynamicAllocation.enabled=false
+Initial Executor 넉넉히 확보	spark.dynamicAllocation.initialExecutors=8
+Skew Join + Salting 조합	Dynamic Allocation + Skew Join은 위험할 수 있음
+External Shuffle 구성	YARN에서만 안정적 / K8s는 실험적으로 도입해야 함
+✅ 요약 정리
+주제	핵심 포인트
+클러스터 매니저 비교	YARN은 안정성, K8s는 유연성과 통합, Standalone은 테스트 용
+K8s에서 Spark 이점	컨테이너 기반 배포, ArgoCD 연동, GitOps 자동화 가능
+Executor 구성 전략	메모리/코어 균형 + GC 피하기 + 병렬도 고려
+Dynamic Allocation 문제점	Executor 생성 지연, Shuffle 데이터 손실, Skew 처리 악화 등
+필요하다면
+
+Spark on Kubernetes에 External Shuffle 붙이는 법,
+
+Resource tuning 예시별로 실제 실행 시간 비교 분석
+같이 살펴볼 수 있어요!
 
 - Executor 개수와 코어, 메모리 조합을 결정하는 기준은? 실무에서 고려하는 변수는 무엇인가?
 
@@ -1185,6 +1400,8 @@ spark.sql.adaptive.shuffle.targetPostShuffleInputSize=64MB
 7. 성능 튜닝 및 베스트 프랙티스
 
 - Partition 개수는 어떻게 잡아야 최적일까? 데이터 사이즈, CPU, Task 수 기준을 고려해서.
+
+
 
 - Caching과 Persistence는 언제 유효하고, 잘못하면 왜 오히려 성능이 나빠질까?
 
