@@ -1,163 +1,160 @@
 ## Network
 
-### **1. OSI & TCP/IP Models in Data Engineering**
+### **1. 데이터 엔지니어링에서 OSI & TCP/IP 모델**
 
-- How does the OSI model apply when a distributed ETL job fetches data from a remote PostgreSQL database? Which layers are involved?
-    - **Application Layer (Layer 7):** The ETL tool communicates with PostgreSQL using the PostgreSQL protocol over TCP/IP.
-    - **Transport Layer (Layer 4):** TCP ensures reliable data transmission between the ETL job and PostgreSQL.
-    - **Network Layer (Layer 3):** IP handles routing the packets across networks.
-    - **Data Link & Physical Layers (Layers 2 & 1):** Ethernet, Wi-Fi, or other physical connections transmit the data packets.
-- When designing a data pipeline that ingests data from an SFTP server into a data warehouse, which protocols and OSI layers are most relevant?
-    - **Application Layer (Layer 7):** SFTP protocol is used for secure file transfers.
-    - **Transport Layer (Layer 4):** TCP ensures ordered and reliable delivery.
-    - **Network Layer (Layer 3):** IP routes packets across networks.
-    - **Data Link Layer (Layer 2):** Ethernet/Wi-Fi manages physical addressing.
-- You are designing a distributed ETL pipeline that transfers large volumes of data between multiple data centers. Given the OSI and TCP/IP models, how would you **optimize** data transmission to minimize packet loss and latency?
-    - Use **compression** to reduce payload size.
-        - **Application-level compression**: Compressing files (e.g., using Parquet or ORC format in Spark).
-        - **Network-level compression**: TCP can apply compression (e.g., TLS compression in HTTPS).
-        - **Protocol-specific compression**: Kafka’s Snappy compression, gRPC’s built-in Protobuf compression.
-    - Optimize **TCP window scaling** for better throughput.
-        
-        TCP **window scaling** is a feature that allows TCP to handle high-speed and high-latency networks efficiently by increasing the size of the receive window beyond the default 65,535 bytes.
-        
-        - The **receive window** determines how much data a receiver can accept before sending an acknowledgment (ACK).
-        - In high-latency networks (e.g., cross-data-center transfers), a small window can **bottleneck throughput**.
-        - Window scaling uses a multiplier to expand the window size up to **1GB**, allowing more data to be in transit before waiting for ACKs.
-    - Implement **Load Balancing & CDNs** to distribute traffic efficiently.
-        - Round-robin, Least connections, etc… for kafka → kafka distributes partitions automatically
-        
-        A **CDN** is useful if your ETL pipeline **serves large datasets** (e.g., pre-aggregated analytics).
-        
-        **Example 1: Cloudflare or AWS CloudFront for Cached Data**
-        
-        If your ETL pipeline serves pre-processed reports, store them in **S3 + CloudFront** to reduce load on the origin server:
-        
-        - ETL job stores results in **S3**.
-        - **CloudFront caches the data**, reducing data transfer costs.
-        - Users in different regions **fetch from the nearest edge server**.
-        
-        **Example 2: Kafka MirrorMaker for Cross-Region Replication**
-        
-        - If you have a **Kafka cluster in two data centers**, use **Kafka MirrorMaker** to replicate topics across regions.
-        - Clients **consume from the nearest cluster** to reduce latency.
-    - Use **parallelism & partitioning** to divide data into manageable chunks.
-- In a real-time data ingestion system, when would you prefer TCP over UDP? How would factors like reliability, ordering, and speed impact your choice in a data engineering pipeline?
-    - **TCP:** Preferred when reliability and ordering are critical (e.g., financial transactions).
-    - **UDP:** Used for real-time, high-frequency ingestion where latency is a concern (e.g., stock market ticker updates).
+- 분산 ETL 작업이 원격 PostgreSQL 데이터베이스에서 데이터를 가져올 때 **OSI 모델**은 어떻게 적용되며, 어떤 계층이 관련될까?
+    - **애플리케이션 계층 (Layer 7):** ETL 도구는 PostgreSQL 프로토콜을 사용하여 TCP/IP를 통해 통신.
+    - **전송 계층 (Layer 4):** TCP는 ETL 작업과 PostgreSQL 간 신뢰할 수 있는 데이터 전송을 보장.
+    - **네트워크 계층 (Layer 3):** IP가 패킷을 네트워크를 통해 라우팅.
+    - **데이터 링크 & 물리 계층 (Layers 2 & 1):** 이더넷, Wi-Fi 또는 기타 물리적 연결이 데이터 패킷을 전송.
+- SFTP 서버에서 데이터 웨어하우스로 데이터를 수집하는 **데이터 파이프라인**을 설계할 때, 가장 관련된 프로토콜과 OSI 계층은?
+    - **애플리케이션 계층 (Layer 7):** SFTP 프로토콜을 사용하여 보안 파일 전송 수행.
+    - **전송 계층 (Layer 4):** TCP가 패킷의 순서 및 신뢰성을 보장.
+    - **네트워크 계층 (Layer 3):** IP가 패킷을 목적지까지 전달.
+    - **데이터 링크 계층 (Layer 2):** 이더넷/Wi-Fi가 물리적 주소 지정 관리.
+- 여러 **데이터 센터 간 대용량 데이터 전송이 필요한 분산 ETL 파이프라인**을 설계할 때, **OSI 및 TCP/IP 모델을 고려하여** 어떻게 패킷 손실과 지연 시간을 최소화할 수 있을까?
+    - **압축 활용**하여 페이로드 크기 축소.
+        - **애플리케이션 수준 압축:** Spark에서 Parquet 또는 ORC 포맷 사용. → columnar
+        - **네트워크 수준 압축:** TCP/TLS 압축 활성화. → 폐쇄적인 네트워크에서만 사용하고, 그렇지 않으면 비활성 권장(세션 쿠키 가로챌 수 있음)
+        - **프로토콜별 압축:** Kafka의 Snappy 압축, gRPC의 Protobuf 내장 압축 사용.
+    - **TCP 윈도우 스케일링 최적화**하여 처리량 향상. → ACK 까지의 65535바이트의 제한을 늘림
+        - **수신 윈도우(Receive Window) 크기**가 작으면 고 지연 네트워크에서 병목 발생. → 수신측이 ACK를 더 자주 기다려야함.
+        - 윈도우 스케일링을 통해 최대 **1GB**까지 확장 가능.
+    - **부하 분산 및 CDN 활용**하여 네트워크 트래픽 분산.
+        - Kafka 클러스터 간 **MirrorMaker**를 사용하여 **크로스 리전 복제**. → 작업 오버헤드?
+        - CloudFront, AWS S3 캐싱을 활용하여 응답 속도 최적화. cloudfront는 cdn. S3는 좀더 중앙화
+    - **병렬 처리 및 파티셔닝**을 통해 데이터 스트림을 작은 청크로 분할.
+- **실시간 데이터 수집 시스템**에서 TCP와 UDP 중 무엇을 선택할까?
+    - **TCP:** 신뢰성과 패킷 순서 보장이 필요한 경우 (예: 금융 거래).
+    - **UDP:** 초저지연 처리가 중요한 경우 (예: 주식 시장 실시간 가격 데이터).
 
-### **2. Network Packets & Headers in Data Transmission**
+---
 
-- When transmitting large dataset chunks over an API, how does TCP packet fragmentation impact performance? How would you optimize data transmission?
-    - Large payloads are split into multiple TCP packets.
-    - Use **MTU tuning** and **chunked transfer encoding** to optimize performance.
-    - Enable **keep-alive and persistent connections** to minimize re-transmissions.
-- If your data ingestion pipeline frequently encounters corrupted JSON payloads from a remote Kafka producer, which network-level headers would you inspect to debug the issue?
-    - Inspect **IP headers** for fragmentation.
-    - Check **TCP checksums** for data integrity.
-    - Analyze **Kafka message headers** for encoding issues.
-- A real-time data streaming job is experiencing unexpected packet drops and inconsistencies in received messages. How would you use networking tools (e.g., Wireshark, TCPDump) to diagnose the issue at different OSI layers?
-    - Use **Wireshark/TCPDump** to inspect TCP retransmissions and dropped packets.
-    - Monitor **network congestion and buffer overflows**..
-    - Adjust **socket buffer sizes**.
+### **2. 데이터 전송에서 네트워크 패킷 & 헤더**
 
-### **3. Network Bottlenecks in ETL Pipelines**
+- **API를 통한 대용량 데이터 전송** 시 TCP 패킷 단편화(Fragmentation)가 성능에 미치는 영향과 최적화 방법?
+    - **MTU 튜닝** 및 **청크 전송 인코딩(Chunked Transfer Encoding)** 활용.
+    - **Keep-Alive 및 지속적 연결(Persistent Connection)** 사용하여 재전송 최소화.
+- **원격 Kafka 프로듀서에서 JSON 페이로드 손상이 자주 발생**할 경우, 어떤 네트워크 레벨 헤더를 확인할까?
+    - **IP 헤더:** 패킷 단편화(Fragmentation) 문제 확인.
+    - **TCP 체크섬(Checksum):** 데이터 무결성 검증.
+    - **Kafka 메시지 헤더:** 인코딩 오류 분석.
+- **실시간 데이터 스트리밍 작업**에서 예상치 못한 패킷 손실 및 메시지 불일치가 발생할 때, **Wireshark/TCPDump**를 활용한 진단 방법?
+    - **TCP 재전송 및 패킷 손실 분석**.
+    - **네트워크 혼잡(Network Congestion) 및 버퍼 오버플로우 모니터링**.
+    - **소켓 버퍼 크기 조정**.
 
-- Your ETL jobs running on a cloud-based data lake are significantly slower than expected. What networking factors (e.g., MTU size, TCP window scaling, congestion control) could contribute to this, and how would you troubleshoot them?
-    - **MTU size mismatches** leading to fragmentation.
-    - **TCP congestion control** reducing throughput.
-    - **Network latency & bandwidth limitations**.
-    - **Use of CDN & edge computing** to offload traffic.
+---
 
-### **4. Encapsulation & Decapsulation in Data Movement**
+### **3. ETL 파이프라인에서 네트워크 병목**
 
-- How does encapsulation/decapsulation work when transferring large datasets via Apache Kafka over a network? Which headers are involved?
-    - Kafka messages are wrapped in protocol headers.
-    - Each message passes through **TCP/IP, Ethernet headers** before transmission.
-- In a Spark job that reads from an S3 bucket, how do network layers handle chunking, transfer, and reassembly?
-    - **HTTP layer:** Manages requests.
-    - **Transport layer:** Ensures reliable data streaming.
-    - **Data Link & Physical layers:** Handle data movement.
-- When moving data between microservices in a Kubernetes cluster, explain how encapsulation and decapsulation happen at different OSI layers. How does this impact latency and throughput?
-    - Use **HTTP/gRPC over TCP** for inter-service communication.
-    - **Service mesh (Istio/Linkerd)** handles encapsulation and load balancing.
+- 클라우드 기반 데이터 레이크에서 **ETL 작업 속도가 예상보다 느릴 때**, 네트워크 병목 원인과 해결 방법?
+    - **MTU 크기 불일치로 인한 패킷 단편화 발생**.
+    - **TCP 혼잡 제어 알고리즘(Reno/Cubic vs. BBR) 최적화**.
+    - **네트워크 지연 및 대역폭 한계 확인**.
+    - **CDN 및 엣지 컴퓨팅 활용하여 트래픽 분산**.
 
-### **5. Network Topology & Data Pipelines**
+---
 
-- Your company has multiple data centers, and you need to design a pipeline that replicates data efficiently between them. What network topologies would you consider, and how would they affect data consistency?
-    - **Star topology:** Centralized but prone to bottlenecks.
-    - **Mesh topology:** Higher fault tolerance.
-    - **Hybrid topology:** Balances efficiency and redundancy.
-- In a distributed environment where data processing happens across multiple nodes, how does network topology impact data shuffling and partitioning?
-    - **Closely connected nodes reduce shuffle costs.**
-    - **Load-aware partitioning improves throughput.**
+### **4. 데이터 이동에서 캡슐화(Encapsulation) & 디캡슐화(Decapsulation)**
 
-### **6. Ethernet & Packet Transmission in Data Engineering**
+- **Kafka를 통한 대용량 데이터 전송** 시 캡슐화 과정과 관련된 헤더?
+    - **Kafka 메시지 → TCP/IP → 이더넷 헤더** 추가 후 네트워크 전송.
+- **Spark가 S3에서 데이터를 읽을 때** 네트워크 계층에서의 데이터 처리 방식?
+    - **HTTP 계층:** 요청 처리.
+    - **전송 계층:** 신뢰성 있는 데이터 스트리밍 보장.
+    - **데이터 링크 및 물리 계층:** 데이터 전송 수행.
+- **Kubernetes 클러스터 내 마이크로서비스 간 데이터 이동** 시 캡슐화 영향?
+    - **HTTP/gRPC over TCP** 통신 사용.
+    - **서비스 메쉬(Istio/Linkerd) 활용**하여 트래픽 관리.
 
-- If you're streaming IoT sensor data into a warehouse, how would Ethernet MTU (Maximum Transmission Unit) affect performance? What strategies would you use to prevent fragmentation?
-    - Large MTU reduces overhead but may cause fragmentation.
-    - Use **Jumbo Frames** for high-throughput networks.
-- How do VLANs and subnets impact data access control when deploying a data warehouse across multiple availability zones?
-    - **VLAN segmentation** restricts access based on departments.
-    - **Subnets enforce access control policies.**
-- Your on-premise data warehouse connects to a Spark cluster for analytics. Would you recommend using Ethernet or Wi-Fi for high-throughput data transfers? Explain your reasoning in terms of latency, collision domains, and reliability.
-    - **Ethernet:** Preferred for stability, low latency.
-    - **Wi-Fi:** Higher packet loss, less reliable for high-throughput.
+---
 
-### **7. Protocols & Data Engineering**
+### **5. 네트워크 토폴로지 & 데이터 파이프라인**
 
-- Your data ingestion pipeline relies on RESTful APIs and sometimes experiences slow responses. How would switching from HTTP/1.1 to HTTP/2 or gRPC impact performance?
-    - HTTP/2 enables **multiplexing**, reducing latency.
-    - gRPC uses **protobufs**, lowering payload size.
-- Why might you choose UDP over TCP for high-frequency real-time data ingestion, such as stock market ticker updates?
-    - UDP preferred for low-latency, real-time updates.
-    - TCP used when data integrity matters.
+- 다중 데이터 센터에서 **효율적인 데이터 복제를 위한 네트워크 토폴로지** 선택?
+    - **스타(Star) 토폴로지:** 중앙 집중식, 병목 위험 존재.
+    - **메시(Mesh) 토폴로지:** 높은 장애 허용성 제공.
+    - **하이브리드(Hybrid) 토폴로지:** 효율성과 중복성을 균형 있게 유지.
 
-### **8. Cast Methods & Load Balancing in Data Engineering**
+---
 
-- When streaming data to multiple downstream consumers, when would you use unicast, multicast, or broadcast?
-    - **Unicast:** One-to-one communication (e.g., client-server queries).
-    - **Multicast:** One-to-many (e.g., real-time analytics).
-    - **Broadcast:** Used in small, contained networks.
-- How would you implement load balancing for an Apache Kafka consumer group in a cloud-based deployment?
-    - **Partitioned consumption** to distribute load.
-    - **Sticky consumers** to ensure ordered processing.
+### **6. 이더넷 & 패킷 전송**
 
-### **9. HTTP vs. gRPC for Data API Endpoints**
+- **IoT 센서 데이터를 스트리밍**할 때 **Ethernet MTU 설정이 성능에 미치는 영향**?
+    - **MTU 크기 증가**는 오버헤드를 줄이지만, 네트워크 단편화 발생 가능.
+    - 고성능 네트워크에서는 **점보 프레임(Jumbo Frames)** 사용 고려.
 
-- Your team is developing a data ingestion API. When would you use HTTP/REST vs. gRPC over TCP, considering performance, payload size, and protocol overhead
-    - REST: More compatible, but slower.
-    - gRPC: Faster with lower overhead, ideal for microservices.
+---
 
-### **10. Handling Network Failures in Data Pipelines:**
+### **7. 프로토콜 선택 & 데이터 엔지니어링**
 
-- A batch job extracts data from a remote API every hour, but network failures sometimes cause incomplete datasets. What strategies (e.g., retries, exponential backoff, idempotency) would you use to handle these failures gracefully?
-    - Implement **retries with exponential backoff**.
-    - Ensure **idempotency** for safe reprocessing.
+- **REST API 속도가 느릴 때** HTTP/1.1 → HTTP/2/gRPC로 변경하면 어떤 성능 이점이 있을까?
+    - **HTTP/2:** 멀티플렉싱 지원, 지연 시간 감소.
+    - **gRPC:** Protobuf 기반으로 페이로드 크기 최소화.
+- **고빈도 실시간 데이터 수집(예: 주식 시장 데이터)** 시 UDP vs TCP 선택 기준?
+    - **UDP:** 초저지연 처리 가능 (패킷 손실 감수).
+    - **TCP:** 신뢰성과 순서 보장이 필요할 때.
 
-### **11. Load Balancers & Data Engineering APIs:**
+---
 
-- You have a high-traffic API serving data to multiple clients. How does a load balancer improve network performance, and what considerations should you make when handling sticky sessions vs. stateless requests?
-    - Use **round-robin, least connections** for stateless requests.
-    - Use **sticky sessions** for stateful transactions.
+### **8. 데이터 엔지니어링에서의 전송 방식 및 부하 분산**
 
-### **12. Edge Computing & Data Engineering:**
+- 여러 개의 다운스트림 소비자에게 데이터를 스트리밍할 때, **유니캐스트, 멀티캐스트, 브로드캐스트 각각 어떻게 사용하나**?
+    - **유니캐스트 (Unicast):** 일대일 통신 (예: 클라이언트-서버 쿼리).
+    - **멀티캐스트 (Multicast):** 일대다 통신 (예: 실시간 분석 데이터 스트리밍).
+    - **브로드캐스트 (Broadcast):** 작은 네트워크 내에서 전체 노드로 데이터 전송.
+- 클라우드 기반 Apache Kafka 소비자 그룹의 부하를 효과적으로 분산하려면 어떻게 해야 할까요?
+    - **파티셔닝된 소비**: 여러 소비자가 서로 다른 파티션을 처리하도록 분배.
+    - **고정 소비자 (Sticky consumers)**: 순서가 중요한 데이터를 올바르게 처리하도록 유지.
 
-- In an IoT data pipeline, sensor devices send data packets to a cloud-based data warehouse. How does edge computing reduce network congestion, and what protocols (e.g., MQTT, WebSockets) would you consider for efficient data transfer?
-    - **Process data closer to the source**.
-    - **Use MQTT/WebSockets** for real-time updates.
+---
 
-### **13. Network Topologies & Data Flow Optimization:**
+### **9. 데이터 API 엔드포인트에서 HTTP vs. gRPC**
 
-- Your company is setting up a multi-region data pipeline for processing customer transactions. How does network topology (e.g., mesh vs. star vs. hybrid) impact the efficiency and fault tolerance of your data architecture?
-    - **Mesh topology for resilience**.
-    - **Star topology for centralized control**.
+- 데이터 수집 API를 개발할 때, 성능, 페이로드 크기, 프로토콜 오버헤드를 고려하여 **HTTP/REST**와 **gRPC over TCP** 중 어떤 것을 선택해야 할까요?
+    - **REST:** 호환성이 뛰어나지만 속도가 상대적으로 느림.
+    - **gRPC:** 성능이 뛰어나고 오버헤드가 낮아 마이크로서비스 간 통신에 적합. → 브라우저 x
 
-### **14. CDN & Data Warehousing Performance:**
+---
 
-- Your data engineering team needs to serve pre-aggregated analytics data to global users. How can a Content Delivery Network (CDN) help reduce network latency, and what caching mechanisms would you implement?
-    - Cache pre-aggregated data.
-    - Use **regional edge servers** for faster access.
+### **10. 데이터 파이프라인의 네트워크 장애 처리**
+
+- 원격 API에서 매시간 데이터를 추출하는 배치 작업이 실행되지만, 네트워크 장애로 인해 불완전한 데이터셋이 발생하는 경우가 있습니다. 이를 효과적으로 처리하려면 어떤 전략을 사용해야 할까요?
+    - **백오프(Exponential Backoff)를 적용한 재시도 메커니즘** 구현. 네트워크 오류나 충돌이 발생했을 때, 재시도 간격을 점진적으로 늘려가며 재시도
+    - 멱등성(Idempotency)을 보장하여 동일한 요청이 여러 번 실행되어도 일관된 결과 유지.
+
+---
+
+### **11. 로드밸런서와 데이터 엔지니어링 API**
+
+- 다수의 클라이언트가 데이터를 요청하는 **고부하 API**에서 부하 분산기는 어떻게 성능을 향상시키며, 스티키 세션(Sticky Session)과 무상태 요청(Stateless Request)을 처리할 때 어떤 고려 사항이 필요할까요?
+    - **라운드 로빈(Round-robin), 최소 연결(Least connections) 알고리즘**을 활용하여 무상태 요청을 효율적으로 분산.
+    - 상태 유지가 필요한 트랜잭션의 경우 **스티키 세션**을 사용하여 특정 클라이언트 요청을 동일한 서버로 라우팅.
+
+---
+
+### **12. 엣지 컴퓨팅(Edge Computing)과 데이터 엔지니어링**
+
+- IoT 데이터 파이프라인에서 센서 장치가 클라우드 기반 데이터 웨어하우스로 데이터를 전송할 때, **엣지 컴퓨팅**은 네트워크 혼잡을 어떻게 줄이고, 어떤 프로토콜(MQTT, WebSockets 등)을 사용해야 할까요?
+    - **엣지에서 데이터를 사전 처리**하여 네트워크 트래픽 감소.
+    - 실시간 업데이트가 필요할 경우 **MQTT/WebSockets** 활용.
+
+---
+
+### **13. 네트워크 토폴로지와 데이터 흐름 최적화**
+
+- 다중 지역에서 고객 거래 데이터를 처리하는 데이터 파이프라인을 구축할 때, 네트워크 토폴로지(예: 메시, 스타, 하이브리드)가 데이터 아키텍처의 효율성과 내결함성(Fault Tolerance)에 미치는 영향은 무엇인가요?
+    - **메시 토폴로지 (Mesh Topology):** 다중 경로를 제공하여 장애에 대한 복원력이 높음.
+    - **스타 토폴로지 (Star Topology):** 중앙 집중식 관리가 가능하지만 중앙 노드에 장애가 발생하면 전체 네트워크에 영향.
+
+---
+
+### **14. CDN과 데이터 웨어하우징 성능 최적화**
+
+- 데이터 엔지니어링 팀이 **전 세계 사용자**에게 **사전 집계된 분석 데이터**를 제공해야 합니다. CDN이 네트워크 지연을 줄이는 데 어떻게 기여할 수 있으며, 어떤 캐싱 메커니즘을 구현할 수 있을까요?
+    - **사전 집계된 데이터(Pre-aggregated data)를 캐시**하여 처리 속도를 향상.
+    - 지역별 엣지 서버(Regional Edge Servers)를 활용하여 사용자와 가까운 곳에서 데이터 제공.
 
 ---
 
@@ -207,7 +204,7 @@
 🔎 **4. 데이터 링크 계층 (Data Link Layer - 이더넷 / Wi-Fi / 5G)**
 
 - **무슨 일이 일어나나요?**
-    - IP 패킷을 **프레임(Frame)**으로 감싸 전송 준비
+    - IP 패킷을 프레임으로 감싸 전송 준비
         - 유선이면 Ethernet Frame
         - 무선이면 Wi-Fi Frame
         - 모바일이면 5G/LTE 프레임
@@ -236,75 +233,87 @@
 
 ### 1-2. 대용량 데이터를 수집힐 때, 전송, 네트워크 계층에서 어떤 문제가 발생할 수 있을까요?
 
-**Transport Layer Problems & Solutions**
+**전송 계층 문제 및 해결책**
 
-The **transport layer (Layer 4)** is responsible for end-to-end communication, error recovery, and congestion control.
+**전송 계층 (Layer 4)** 은 종단 간(end-to-end) 통신, 오류 복구, 혼잡 제어를 담당합니다.
 
-**1. High Latency & Packet Loss**
+**1. 높은 지연 시간(Latency) & 패킷 손실(Packet Loss)**
 
-- **Problem:** Large data transfers may experience significant delays due to congestion, leading to dropped packets and retransmissions.
-- **Solutions:**
-    - Use **Multipath TCP (MPTCP)** to split traffic across multiple network paths.
-    - Implement **QUIC (Quick UDP Internet Connections)** for faster, low-latency data transfer.
-    - Use **optimized congestion control algorithms** (e.g., BBR instead of Reno/Cubic).
-
-**2. TCP Throughput Bottlenecks**
-
-- **Problem:** TCP's congestion control can throttle throughput when handling large data streams.
-- **Solutions:**
-    - Use **UDP-based transport** (e.g., QUIC, RDMA over Converged Ethernet). TCP에서 병목이 발생한다고 UDP로 바꿔버리는게 해결책 ?! … ← ㅁㄴㅇㄻㄴㅇㄻㄴㅇㄻㄴㅇㄹ
-    - Optimize TCP window scaling and buffer sizes.
-    - Deploy **parallel TCP streams** to maximize bandwidth.
-
-**3. Inefficient Data Serialization**
-
-- **Problem:** Poorly formatted or excessive serialization (e.g., JSON) can slow down transport efficiency.
-- **Solutions:**
-    - Use **binary formats** like **Apache Avro, Protocol Buffers, or FlatBuffers**. → protobuff 쓴다는건 RPC?
-    - Compress data before transport (e.g., **Snappy, LZ4**).
-
-**4. Fault Tolerance & Data Integrity**
-
-- **Problem:** Data corruption or partial failures during transfer.
-- **Solutions:**
-    - Use **checksum-based verification** (e.g., TCP checksum, CRC).
-    - Implement **retry and deduplication mechanisms** in applications.
+- **문제:** 대용량 데이터 전송 시 네트워크 혼잡으로 인해 패킷 손실 및 재전송이 발생할 수 있음.
+- **해결책:**
+    - **Multipath TCP (MPTCP)** 를 사용하여 여러 네트워크 경로로 트래픽을 분산.
+    - **QUIC (Quick UDP Internet Connections)** 을 활용하여 저지연 데이터 전송 수행.
+    - **최적화된 혼잡 제어 알고리즘** (예: Reno/Cubic 대신 BBR) 적용.
 
 ---
 
-**Network Layer Problems & Solutions**
+**2. TCP 처리량(Throughput) 병목**
 
-The **network layer (Layer 3)** handles packet forwarding, routing, and addressing.
+- **문제:** TCP의 혼잡 제어로 인해 대규모 데이터 스트림 처리 시 처리량이 제한될 수 있음.
+- **해결책:**
+    - **UDP 기반 전송** (예: QUIC, RDMA over Converged Ethernet) 활용.
+    - TCP 윈도우 크기 및 버퍼 크기 최적화.
+    - **병렬 TCP 스트림(Parallel TCP Streams)** 을 사용하여 대역폭 극대화.
 
-**1. Bandwidth Constraints**
+---
 
-- **Problem:** Limited bandwidth slows down big data transfers.
-- **Solutions:**
-    - Use **Data Compression** before sending data.
-    - Optimize **routing and load balancing** across multiple paths.
-    - Deploy **Content Delivery Networks (CDNs)** to distribute traffic efficiently.
+**3. 비효율적인 데이터 직렬화(Serialization)**
 
-**2. Network Congestion & Packet Reordering**
+- **문제:** JSON과 같은 비효율적인 직렬화 형식 사용 시 전송 성능 저하 가능.
+- **해결책:**
+    - **Apache Avro, Protocol Buffers, FlatBuffers** 와 같은 **바이너리 포맷(Binary Format)** 사용.
+    - 데이터 전송 전에 **Snappy, LZ4** 등의 알고리즘으로 압축.
 
-- **Problem:** Large-scale data transfers can congest networks, causing packet delays or reordering.
-- **Solutions:**
-    - Use **Quality of Service (QoS) policies** to prioritize critical data.
-    - Enable **Explicit Congestion Notification (ECN)** in TCP/IP stacks.
-    - Use **Software-Defined Networking (SDN)** to optimize routing dynamically.
+---
 
-**3. IP Fragmentation Issues**
+**4. 내결함성(Fault Tolerance) 및 데이터 무결성(Data Integrity)**
 
-- **Problem:** Large data packets may be fragmented, causing reassembly issues.
-- **Solutions:**
-    - Adjust **MTU (Maximum Transmission Unit)** sizes to avoid fragmentation.
-    - Use **Jumbo Frames** (9,000 bytes) in high-performance networks.
+- **문제:** 데이터 전송 중 일부 패킷이 손상되거나 누락될 가능성이 있음.
+- **해결책:**
+    - **체크섬(Checksum) 기반 검증** (예: TCP 체크섬, CRC) 적용.
+    - 애플리케이션 레벨에서 **재시도(Retry) 및 중복 제거(Deduplication) 메커니즘** 구현.
 
-**4. Routing Inefficiencies & Failures**
+---
 
-- **Problem:** Poor routing decisions or failures increase latency.
-- **Solutions:**
-    - Implement **BGP optimizations** for inter-data-center transfers.
-    - Use **Anycast routing** to reduce data travel distances.
+**네트워크 계층 문제 및 해결책**
+
+**네트워크 계층 (Layer 3)** 은 패킷 전달(Forwarding), 라우팅(Routing), 주소 지정(Addressing)을 담당합니다.
+
+**1. 대역폭(Bandwidth) 제한**
+
+- **문제:** 제한된 대역폭으로 인해 대용량 데이터 전송 속도가 느려질 수 있음.
+- **해결책:**
+    - 전송 전 **데이터 압축(Data Compression)** 적용.
+    - 여러 경로에 걸쳐 **라우팅 최적화 및 부하 분산(Load Balancing)** 수행.
+    - **CDN (Content Delivery Network)** 을 활용하여 트래픽을 효율적으로 분산.
+
+---
+
+**2. 네트워크 혼잡(Network Congestion) & 패킷 순서 변경(Packet Reordering)**
+
+- **문제:** 대규모 데이터 전송 시 네트워크가 혼잡해져 패킷 지연 또는 순서 변경 발생 가능.
+- **해결책:**
+    - **QoS (Quality of Service) 정책** 을 적용하여 중요한 데이터 우선 처리.
+    - TCP/IP 스택에서 **ECN (Explicit Congestion Notification)** 활성화.
+    - **SDN (Software-Defined Networking)** 을 활용하여 동적 라우팅 최적화.
+
+---
+
+**3. IP 단편화(Fragmentation) 문제**
+
+- **문제:** 대형 패킷이 단편화되면 재조립 과정에서 성능 저하 발생 가능.
+- **해결책:**
+    - **MTU (Maximum Transmission Unit)** 값을 조정하여 단편화를 방지.
+    - 고성능 네트워크 환경에서 **Jumbo Frames** (9,000바이트) 사용.
+
+---
+
+**4. 비효율적인 라우팅(Routing) & 장애(Failure)**
+
+- **문제:** 잘못된 라우팅 결정 또는 장애로 인해 지연 시간이 증가할 수 있음.
+- **해결책:**
+    - 데이터 센터 간 전송을 최적화하기 위해 **BGP (Border Gateway Protocol) 최적화** 수행.
+    - **애니캐스트(Anycast) 라우팅** 을 활용하여 데이터 전송 거리를 단축.
 
 ---
 
@@ -356,7 +365,7 @@ The **network layer (Layer 3)** handles packet forwarding, routing, and addressi
 
 **A.**
 
-리버스 프록시는 클라이언트가 아닌 서버 측에 위치하는 프록시입니다. 클라이언트는 리버스 프록시를 통해서만 서버에 접근하고, 리버스 프록시가 여러 서버 중 적절한 서버로 요청을 전달합니다.
+리버스 프록시는 클라이언트가 아닌 **서버 측**에 위치하는 프록시입니다. 클라이언트는 리버스 프록시를 통해서만 서버에 접근하고, 리버스 프록시가 여러 서버 중 적절한 서버로 요청을 전달합니다.
 
 일반 프록시는 클라이언트가 목적지 서버에 접근하는 것을 대신하는 반면, 리버스 프록시는 서버가 클라이언트의 요청을 직접 받지 않고 리버스 프록시가 대신 받아 처리한다는 점이 가장 큰 차이입니다.
 
@@ -403,5 +412,7 @@ ETL 파이프라인에서 리버스 프록시는 주로 **데이터 수집(Extra
 예를 들어, 대용량의 IoT 데이터가 실시간으로 들어오는 환경에서 이런 구조를 적용하면 파이프라인 장애를 예방할 수 있습니다.
 
 ### 2-5 트래픽 분산은 백엔드 관점과 하드웨어 관점에서 어떻게 할 수 있을까요?
+
+(High connectivity와  관련)
 
 1. 하드웨어: 리눅스의 경우 NIC
