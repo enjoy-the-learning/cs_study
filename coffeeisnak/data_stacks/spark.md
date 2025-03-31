@@ -1284,7 +1284,7 @@ spark.sql.shuffle.partitions=800
 
 ### 6. 클러스터와 리소스 관리
 
-- YARN, Standalone, Kubernetes 클러스터 매니저의 차이점과 Spark가 Kubernetes 환경에서 가지는 이점
+##### 6 - 1. YARN, Standalone, Kubernetes 클러스터 매니저의 차이점과 Spark가 Kubernetes 환경에서 가지는 이점
 
 - YARN, Standalone, Kubernetes 클러스터 매니저
     - 공통점: 모두 클러스터 리소스 할당 + Executor 스케줄링 역할 수행
@@ -1314,135 +1314,347 @@ spark.sql.shuffle.partitions=800
     - 단점: 설정 복잡도 높고, Spark 기능 중 일부는 미지원도 있음 (예: External Shuffle 기본 없음)
 
 - Spark가 Kubernetes 환경에서 가지는 이점
-이점	설명
-동적 리소스 확장/축소	K8s 오토스케일링 연동 가능 (HPA)
-ArgoCD + GitOps 연계	GitHub에서 DAG 관리 → 자동 배포 가능
-컨테이너 기반 실행	Spark Image 관리 용이 (DockerHub 연동)
-복잡한 MSA 환경에 유리	Kafka, Flink, API 서버 등 다양한 컴포넌트 연동 쉬움
-멀티 클러스터/멀티테넌시 관리	GKE/EKS 등 퍼블릭 클라우드 인프라와 잘 맞음
-✅ [2] Executor 개수 / 코어 / 메모리 조합 기준
-▶ 기본 공식
-text
-복사
-편집
+    - 동적 리소스 확장/축소: K8s 오토스케일링 연동 가능 (HPA)
+    - ArgoCD + GitOps 연계: GitHub에서 DAG 관리 → 자동 배포 가능
+    - 컨테이너 기반 실행: Spark Image 관리 용이 (DockerHub 연동)
+    - 복잡한 MSA 환경에 유리: Kafka, Flink, API 서버 등 다양한 컴포넌트 연동 쉬움
+    - 멀티 클러스터/멀티테넌시 관리: GKE/EKS 등 퍼블릭 클라우드 인프라와 잘 맞음
+
+
+##### 6 - 2. Executor 개수와 코어, 메모리 조합을 결정하는 기준은? 실무에서 고려하는 변수는 무엇인가?
+
+- Executor 개수 / 코어 / 메모리 조합 기준
+
+```text
 총 Executor 수 = (전체 코어 수) / (Executor당 코어 수)
-✅ 실무에서 고려하는 주요 변수들
-변수	설명
-데이터 크기	수십 GB → 소형 Executor, 수 TB → 대형 Executor
-Job 타입	Batch (메모리 중심) / Streaming (지속적 처리)
-Shuffle 발생 여부	Shuffle이 많으면 Executor 수 늘리기 / 메모리도 넉넉히
-GC 문제	코어 수 과하면 GC Pause 시간 길어짐 → 4~5개 이하 권장
-Task 병렬도	spark.sql.shuffle.partitions와 연동해서 계산
-Node Spec	클러스터 노드가 8코어/32GB라면 Executor 2개씩 (코어 4, 메모리 14~15GB) 추천
-▶ 예시 세팅 (GKE 기준)
-bash
-복사
-편집
+```
+
+- 실무에서 고려하는 주요 변수들
+    - 데이터 크기: 수십 GB → 소형 Executor, 수 TB → 대형 Executor
+    - Job 타입: Batch (메모리 중심) / Streaming (지속적 처리)
+    - Shuffle 발생 여부: Shuffle이 많으면 Executor 수 늘리기 / 메모리도 넉넉히
+    - GC 문제: 코어 수 과하면 GC Pause 시간 길어짐 → 4~5개 이하 권장
+    - Task 병렬도: spark.sql.shuffle.partitions와 연동해서 계산
+    - Node Spec: 클러스터 노드가 8코어/32GB라면 Executor 2개씩 (코어 4, 메모리 14~15GB) 추천
+
+- 예시 세팅 (GKE 기준)
+    - 메모리 오버헤드는 넉넉히 (네트워크 + shuffle buffer 포함되기 때문)
+    - 한 노드당 12 Executor, 코어는 35개 선에서 시작해서 튜닝
+
+```bash
 spark.executor.instances=8
 spark.executor.cores=4
 spark.executor.memory=8g
 spark.executor.memoryOverhead=1g
-✔️ 메모리 오버헤드는 꼭 넉넉히! (네트워크 + shuffle buffer 포함되기 때문)
-✔️ 한 노드당 12 Executor, 코어는 35개 선에서 시작해서 튜닝
-
-✅ [3] Dynamic Resource Allocation이 병목을 만드는 케이스
-😵 대표적인 비효율 상황
-🔴 1. Executor 생성/종료에 시간이 오래 걸리는 환경
-예: Kubernetes에서 Executor 생성에 10~30초 소요
-→ 스파크는 Task 대기 중인데 Executor는 아직 생성 중
-→ 빈틈 많은 리소스 운영 → 성능 저하
-
-🔴 2. Shuffle-heavy 작업에서 Executor가 죽으면...
-Shuffle 파일은 Executor 로컬에 저장
-→ Executor가 사라지면 Shuffle 재다운로드 필요
-→ I/O 폭증 + 성능 저하
-
-🔧 해결법:
-
-YARN은 External Shuffle Service로 해결 가능
-
-Kubernetes는 기본 지원 ❌ → 직접 설정하거나 피하는 게 안전
-
-🔴 3. Streaming / Long-running Job
-Executor가 계속 늘고 줄면
-→ State 유지 어려움 + Latency 불안정
-→ 특히 Kafka, Flink 연동 시 심각
-
-🔴 4. Data Skew 상태에서 병목 Task가 죽었다 살아남
-특정 키에 Task가 몰려있는데
-Dynamic Allocation이 그 Task가 있는 Executor를 없애버림
-→ 같은 Skew Task 재시작 → 또 죽음 → 무한 반복
-
-🛠 실전 대처법
-전략	설명
-Static Executor 할당	spark.dynamicAllocation.enabled=false
-Initial Executor 넉넉히 확보	spark.dynamicAllocation.initialExecutors=8
-Skew Join + Salting 조합	Dynamic Allocation + Skew Join은 위험할 수 있음
-External Shuffle 구성	YARN에서만 안정적 / K8s는 실험적으로 도입해야 함
-✅ 요약 정리
-주제	핵심 포인트
-클러스터 매니저 비교	YARN은 안정성, K8s는 유연성과 통합, Standalone은 테스트 용
-K8s에서 Spark 이점	컨테이너 기반 배포, ArgoCD 연동, GitOps 자동화 가능
-Executor 구성 전략	메모리/코어 균형 + GC 피하기 + 병렬도 고려
-Dynamic Allocation 문제점	Executor 생성 지연, Shuffle 데이터 손실, Skew 처리 악화 등
-필요하다면
-
-Spark on Kubernetes에 External Shuffle 붙이는 법,
-
-Resource tuning 예시별로 실제 실행 시간 비교 분석
-같이 살펴볼 수 있어요!
-
-- Executor 개수와 코어, 메모리 조합을 결정하는 기준은? 실무에서 고려하는 변수는 무엇인가?
-
-- Dynamic Resource Allocation이 오히려 병목을 만드는 경우는 어떤 케이스인가?
+```
 
 
-7. 성능 튜닝 및 베스트 프랙티스
+##### 6 - 3. Dynamic Resource Allocation이 오히려 병목을 만드는 경우는 어떤 케이스인가?
 
-- Partition 개수는 어떻게 잡아야 최적일까? 데이터 사이즈, CPU, Task 수 기준을 고려해서.
+1. Executor 생성/종료에 시간이 오래 걸리는 환경
+    - 예: Kubernetes에서 Executor 생성에 10~30초 소요 => 스파크는 Task 대기 중인데 Executor는 아직 생성 중 => 빈틈 많은 리소스 운영 → 성능 저하
 
+2. Shuffle-heavy 작업에서 Executor가 죽으면 Shuffle 파일은 Executor 로컬에 저장
+    - Executor가 사라지면 Shuffle 재다운로드 필요 => I/O 폭증 + 성능 저하
 
+- 해결법
+    - YARN은 External Shuffle Service로 해결 가능
+    - Kubernetes는 기본 지원 ❌ → 직접 설정하거나 피하는 게 안전
 
-- Caching과 Persistence는 언제 유효하고, 잘못하면 왜 오히려 성능이 나빠질까?
+3. Streaming / Long-running Job
+    - Executor가 계속 늘고 줄면 → State 유지 어려움 + Latency 불안정 → 특히 Kafka, Flink 연동 시 심각
 
-- Whole-stage Code Generation이란 무엇인가? 성능이 어느 정도 개선되는지, 그리고 예외 케이스는?
+4. Data Skew 상태에서 병목 Task가 죽었다 살아남
+    - 특정 키에 Task가 몰려있는데 => Dynamic Allocation이 그 Task가 있는 Executor를 없애버림 → 같은 Skew Task 재시작 → 또 죽음 → 무한 반복
 
-
-8. 실시간 스트리밍 (Structured Streaming)
-
-- Spark Structured Streaming이 Micro-batch 방식인데, 실시간 시스템이라 부를 수 있는 이유는?
-
-- Watermark는 왜 필요한가? Late Data 처리와 관련해서 실무에 적용하려면 뭘 고려해야 하나?
-
-- Exactly-once를 Spark Structured Streaming이 보장할 수 있는 구조적 근거는?
-
-
-9. Spark와 빅데이터 에코시스템 연계
-
-- Spark가 Hadoop HDFS와 어떻게 통신하고 데이터를 읽는가? (InputFormat, Block Reading)
-
-- Kafka Consumer로서 Spark Streaming과 Structured Streaming의 차이점은?
-
-- Spark와 Delta Lake, Iceberg 같은 레이크하우스 솔루션이 결합될 때 어떤 이점이 있나?
+- 대처법
+    - Static Executor 할당: spark.dynamicAllocation.enabled=false
+    - Initial Executor 넉넉히 확보: spark.dynamicAllocation.initialExecutors=8
+    - Skew Join + Salting 조합: Dynamic Allocation + Skew Join은 위험할 수 있음
+    - External Shuffle 구성: YARN에서만 안정적 / K8s는 실험적으로 도입해야 함
 
 
-10. 실무 사례 및 트러블슈팅
+### 7. 성능 튜닝 및 베스트 프랙티스
 
-- Out of Memory(OOM) 오류가 발생했을 때, 어디서부터 어떻게 진단할 것인가?
+##### 7 - 1. Partition 개수는 어떻게 잡아야 최적일까? 데이터 사이즈, CPU, Task 수 기준을 고려해서.
 
-- 스테이지가 특정 Task에서 멈춰있을 때, 원인 분석과 대응 방안은?
+- 기본적으로는 `spark.sql.shuffle.partitions` (기본값: 200)
 
-- 스팟 인스턴스 기반 클러스터에서 Spark 잡이 안정적으로 실행되게 하려면?
+- 병렬성 = partition 수 = task 수 → CPU 사용량과 밀접히 관련
+
+- 기준 소개
+    - Input Data Size: 1개 partition이 100~200MB 정도면 적절. (압축파일 기준은 더 작게)
+    - Executor 수 & Core 수: 전체 task 수 = partition 수가 executor × core 수 × 2~3 정도 되면 적당
+    - 작업 성격
+        - Wide Transformation (e.g. join, groupBy) 많이 쓸수록 파티션 수 조절 중요
+        - 파일 개수 많으면 파티션도 그에 맞게 세분화 필요
+
+- 파티션 개수는
+    - 너무 적으면 → CPU 놀고 있음
+    - 너무 많으면 → Task Scheduling + Shuffle Overhead 증가
+
+```python
+df = spark.read.parquet("...").repartition(400)  # 직접 조정 가능
+```
 
 
+##### 7 - 2. Caching과 Persistence는 언제 유효하고, 잘못하면 왜 오히려 성능이 나빠질까?
+
+- Spark는 Lazy Execution이므로, DataFrame을 여러 번 사용할 때마다 매번 다시 계산됨.
+
+- `.cache()`나 `.persist()`를 사용하면, 첫 실행 결과를 메모리/디스크에 저장해서 재계산 방지 가능.
 
 
+```python
+df = spark.read.parquet("...").filter("type = 'click'")
+df.cache()  # 이후 이 df를 여러 번 join/filter/etc 할 때 성능 향상
+```
 
+- 오히려 성능이 나빠지는 경우 존재
+    - 캐싱할 DF가 너무 큼: 메모리 부족 → 디스크 spill 발생 → 느려짐
+    - 한 번만 사용: 굳이 cache 필요 없음 → 오히려 불필요한 메모리 할당
+    - 자주 업데이트 되는 DF: 캐싱된 내용이 stale → 버그 위험
+
+- 추천: .cache() 사용 후 .count()로 트리거 실행 → 실제 메모리에 올라가는지 확인
+
+
+##### 7 - 3. Whole-stage Code Generation이란 무엇인가? 성능이 어느 정도 개선되는지, 그리고 예외 케이스는?
+
+- Whole-Stage Code Generation (WSCG)이란: Catalyst 최적화 이후, 물리 실행 계획을 Java 바이트코드로 통째로 생성해주는 기능
+
+- 여러 연산(예: filter + projection + aggregation 등)을 하나의 루프로 병합해서 실행
+
+- 기존엔 Row마다 함수 호출 → WSCG는 루프 내부에 모든 연산을 Inline
+
+- 성능 향상 정도
+    - 메소드 호출/객체 생성 비용 절감.
+    - CPU 캐시 활용도 올라감.
+    - 최대 수십 배 빠름 (특히 많은 Row 처리 시)
+
+- 예외 케이스 (WSCG 비활성화됨)
+    - UDF 사용: JVM에서 직접 인라인 못함
+    - 복잡한 표현식: 코드가 너무 커져서 JVM의 method size 제한 (64KB) 초과
+    - Interpreted Mode 강제: `spark.sql.codegen.wholeStage=false` 설정 시
+
+- 확인 방법
+```python
+df.explain(True)  # Physical Plan에 WholeStageCodegen 나타나는지 확인
+```
 
 
 
+### 8. 실시간 스트리밍 (Structured Streaming)
+
+##### 8 - 1. Spark Structured Streaming이 Micro-batch 방식인데, 실시간 시스템이라 부를 수 있는 이유는?
+
+- Micro-batch = 실시간과의 타협점
+- Structured Streaming은 내부적으로 짧은 간격의 반복적인 배치 처리 (micro-batch)로 동작
+- 즉, 정해진 Trigger 시간마다 새로운 데이터를 Pull + 처리 + Sink에 Write 함.
+
+```text
+Trigger: 1초 (default) → 1초 간격으로 데이터를 묶어서 처리
+```
+
+- 그럼에도 실시간이라 부르는 이유
+    - Latency가 짧기 때문: 트리거 간격이 매우 짧으면, 사용자는 거의 실시간처럼 느낍니다. (1초 또는 수백 ms 단위 가능)
+    - Continuous 처리 모델과 유사하게 동작: 내부적으로는 배치지만, 사용자는 streaming query abstraction을 쓰기 때문에 이벤트 기반처럼 다룰 수 있음
+    - Windowing / Aggregation / Join 등 스트리밍 특화 기능 제공: 시간 기반 연산도 배치가 아니라 streaming semantic으로 해석됨
+
+- 정리: Spark는 Streaming의 API 철학을 유지하면서, Batch 엔진의 안정성을 같이 취하는 구조
+    - Flume/Storm 대비 높은 신뢰성과 유지보수 편리함이 장점
+
+
+##### 8 - 2. Watermark는 왜 필요한가? Late Data 처리와 관련해서 실무에 적용하려면 뭘 고려해야 하나?
+
+
+- Watermark는 "이 시점 이후엔 더 이상 늦은 데이터가 오지 않을 거라고 가정"하는 기준 시간입니다.
+
+- 이벤트 타임 기반 스트리밍 처리에서, 늦게 도착한 데이터(=Late Data)가 있을 수 있음
+
+- 하지만 무한정 기다릴 순 없으므로, 어느 시점에서 늦은 데이터 무시 또는 별도로 처리해야 함
+
+```python
+df.withWatermark("eventTime", "10 minutes")  # 10분보다 늦게 들어온 데이터는 무시
+```
+
+- 적용 시 고려사항
+    - 데이터 도착 지연 패턴 분석: 얼마나 늦게 들어오는 데이터가 있는지 실측 필요
+    - 유저 행동 데이터/센서 로그 등: 모바일/IoT 환경에서는 지연이 흔하므로 Watermark 꼭 써야 함
+    - Join/Window 연산 시 필수: Watermark 없으면 상태정보가 계속 메모리에 쌓임 → OOM 위험
+    - 필드 기준: eventTime 필드는 정확히 파싱되고 timestamp type이어야 함
+    - 복합 처리: late data는 별도 sink로 분기하거나, 보정 처리 루틴 추가 가능
+
+- watermark 설정이 너무 짧으면 유실되고, 너무 길면 리소스 낭비 => 적절한 타협 필요.
 
 
 
+##### 8 - 3. Exactly-once를 Spark Structured Streaming이 보장할 수 있는 구조적 근거는?
 
+- Structured Streaming의 "exactly-once"는 Sink 기준의 보장
+    - 즉, 결과가 중복되지 않고 한 번만 기록되는지를 보장하는 것.
+
+- 구조적 메커니즘
+
+1. Checkpointing: 
+    - Streaming Query의 상태와 Offset을 주기적으로 저장
+    - 장애 발생 시, checkpoint 기준으로 정확히 복원 가능
+
+```python
+writeStream.option("checkpointLocation", "/path/to/checkpoint")
+```
+
+2. Write-Ahead Logging (WAL)
+    - 처리 전 Offset과 연산 결과를 저장해놓고, 성공 시에만 Commit
+    - 따라서 중복 실행이 일어나도 중복 기록은 방지됨
+
+3. Idempotent Sink or Transactional Sink
+    - Sink가 "한 번만 쓰기"를 보장할 수 있어야 진짜 Exactly-once가 성립됨
+    - Sink 유형, Exactly-once 가능 여부 정리
+        - File Sink (Parquet, Delta): 기본 제공
+        - Kafka Sink: 필요 조건 있음 (transactional Kafka + idempotent producer)
+        - Foreach Sink: X. 직접 처리하면 보장 어려움 (직접 구현 필요)
+
+- Kafka Sink에서 Exactly-once를 쓰려면: Kafka 0.11 이상 + enable.idempotence=true + acks=all + transactional.id
+    - Structured Streaming에서는 내부적으로 이 옵션을 설정할 수 있도록 설계되어 있음 (kafka.sink.* 설정)
+
+
+### 9. Spark와 빅데이터 에코시스템 연계
+
+##### 9 - 1. Spark가 Hadoop HDFS와 어떻게 통신하고 데이터를 읽는가? (InputFormat, Block Reading)
+
+- 기본 개념: Spark는 Hadoop InputFormat API를 통해 HDFS와 통신함.
+
+- HDFS 저장 구조
+    - 파일이 여러 Block (보통 128MB or 256MB) 단위로 나뉘고
+    - 각 Block은 여러 DataNode에 분산 저장됨
+
+- Spark 동작 흐름
+    1. NameNode에 메타데이터 질의 => Block 위치 확인
+    2. 각 Executor가 해당 Block의 DataNode로부터 데이터를 Pull
+    3. InputFormat, RecordReader를 사용해 데이터를 Row 단위로 파싱
+
+- 주요 포인트
+    - Data Locality: Spark는 Block이 있는 곳에 Executor를 배치하려고 시도함 (Data Local Scheduling)
+    - InputFormat: TextInputFormat, ParquetInputFormat 등, Hadoop의 읽기 규칙을 따름
+    - Splitable File: Gzip처럼 Split 안 되는 파일은 → 1 Executor만 사용 → 성능 하락
+    - Spark는 HDFS뿐 아니라 S3, GCS, Azure Blob 등도 Hadoop FileSystem 인터페이스를 통해 동일하게 접근함 (s3a://, gs:// 등)
+
+
+##### 9 - 2. Kafka Consumer로서 Spark Streaming과 Structured Streaming의 차이점은?
+
+- 핵심 차이: API 철학, 추상화 수준, 안정성
+
+- Spark Streaming (DStreams)
+    - API: RDD 기반
+    - 추상화 수준: Low-level
+    - Kafka 통합: 수동 오프셋 관리 필요
+    - Exactly-once: 직접 구현 필요
+    - 복잡한 연산: 직접 연산 처리 (복잡함)
+    - 성능/유지보수	구버전, deprecated 예정
+
+- Structured Streaming
+    - API: DataFrame 기반
+    - 추상화 수준: High-level SQL + streaming abstraction
+    - Kafka 통합: 자동 관리 (KafkaSource 내장)
+    - Exactly-once: 기본 제공 (with checkpoint)
+    - 복잡한 연산: Windowing, Join, Watermark 모두 지원
+    - 성능/유지보수: 최신 Spark 주력 기능
+
+- 선택 기준
+    - 새 프로젝트 or 확장성 고려: → Structured Streaming 강력 추천
+    - 기존 레거시 유지보수: DStream 일부 사용 가능성 존재
+
+- Structured Streaming은 Kafka의 consumer group 개념 그대로 따르고, `maxOffsetsPerTrigger` 등으로 batch 단위 메시지 양 조절도 가능
+
+
+##### 9 - 3. Spark와 Delta Lake, Iceberg 같은 레이크하우스 솔루션이 결합될 때 어떤 이점이 있나?
+
+- 레이크하우스: 데이터 웨어하우스의 ACID/Schema 관리 기능 + 데이터 레이크의 대용량 유연성을 결합한 모델
+    - 대표 엔진: Delta Lake, Apache Iceberg, Apache Hudi
+
+- Spark와 함께 쓸 때 장점
+    - ACID 트랜잭션: 여러 Spark job이 동시에 read/write 해도 consistency 유지 (로그 기반 atomic write)
+    - Time Travel: 이전 버전 데이터 조회 가능 → 분석 reproducibility 보장
+    - Schema Evolution: 컬럼 추가/삭제 시에도 유연하게 처리 가능
+    - Streaming + Batch 통합: 실시간 ingest + 배치 분석을 하나의 테이블에서 처리
+    - Compaction / Vacuum: 파일 수 많아질 때 자동 병합, 정리 (Delta, Iceberg 모두 지원)
+
+- Delta Lake 예시
+
+```python
+# Append data with ACID guarantees
+df.write.format("delta").mode("append").save("/delta/events")
+
+# Stream write도 가능
+df.writeStream.format("delta")...
+```
+
+- Iceberg는 Presto, Trino, Flink와도 잘 통합됨 → Spark만의 전유물이 아님
+    - 반면 Delta Lake는 Spark 중심 개발이라 Spark 유저에게 특히 유리
+
+
+
+### 10. 케이스 스터디 및 트러블슈팅
+
+##### 10 - 1. Out of Memory(OOM) 오류가 발생했을 때, 어디서부터 어떻게 진단할 것인가?
+
+
+- 진단 순서
+    1. 로그 확인: Container killed by YARN for exceeding memory limits or GC overhead limit exceeded 메시지
+    2. 어떤 메모리인가 확인: Executor Memory / Driver Memory / JVM Heap / Off-Heap / Shuffle
+    3. 어떤 연산인지 확인: join, groupByKey, collect 등 wide + shuffling + large data
+    4. Data Skew 확인: 특정 task가 지나치게 많은 데이터를 처리 중인지.
+
+- 대응 전략
+    - Executor 메모리 부족: `spark.executor.memory` / `spark.executor.memoryOverhead` 값 증가
+    - Driver OOM: `collect()` 대신 `.write()` 등 lazy 방식 사용
+    - Shuffle spill: `spark.sql.shuffle.partitions` 감소시키기 또는 Spark 3.x 이상 AQE 활용
+    - GC Overhead: `spark.executor.extraJavaOptions` 로 GC 옵션 조정 (G1GC 등 다른 GC 알고리즘 사용)
+    - Skew로 인한 쏠림: Salting, Skew Join 전략 도입
+
+```bash
+spark-submit \
+  --conf spark.executor.memory=4g \
+  --conf spark.executor.memoryOverhead=1g \
+  --conf spark.executor.extraJavaOptions="-XX:+UseG1GC"
+```
+
+
+##### 10 - 2. 스테이지가 특정 Task에서 멈춰있을 때, 원인 분석과 대응 방안은?
+
+- 주 원인
+    - 특정 Task가 오래 걸림: Data Skew (특정 키에만 데이터 집중)
+    - Task Retry 반복: Task 실패 후 재시도 중 (로그에 Retrying task 메시지 확인)
+    - 외부 I/O 지연: S3/HDFS/network 이슈, UDF 내부 DB/API call 등
+    - UDF, UDAF 예외: 내부 함수에서 무한 루프, 예외 발생 시 log 없이 멈춘 듯 보이기도 함
+
+- 분석 방법
+    - Spark UI > Stages > Task 시간 분포 확인
+    - 로그 분석: 해당 Task 로그만 따로 보기
+    - Spark History Server, Ganglia, CloudWatch 등 모니터링 도구도 활용
+
+- 해결 방안
+    - Skew: Salting, custom partitioner, broadcast join 활용
+    - 외부 API: 시간 제한 / 타임아웃 설정, 비동기 처리 고려
+    - 불균형 Partition: df.repartition() or coalesce()로 조정
+    - 병렬성 부족: Executor/Core 수 증가 + 적절한 partition tuning
+
+
+##### 10 - 3. 스팟 인스턴스 기반 클러스터에서 Spark 잡이 안정적으로 실행되게 하려면?
+
+
+- 스팟 인스턴스란
+    - AWS, GCP 등에서 제공하는 저가형 일시적 인스턴스
+    - 언제든지 회수될 수 있는 리스크 존재
+
+- 문제 상황
+    - Executor 회수됨: 작업 중이던 Spark Task가 중단됨 → Stage Retry or 전체 Job 실패 가능
+    - Skewed 작업: 특정 Executor에만 Task 몰릴 경우, 해당 인스턴스 회수 시 대미지 큼
+
+- 안정화 전략
+    - 혼합 클러스터 구성: On-Demand + Spot 조합 (예: 70% Spot, 30% On-Demand)
+    - Speculative Execution 활성화: 느린 Task 자동 대체 → spark.speculation=true
+    - checkpoint + job 재시도 전략: streaming이면 checkpoint 필수, batch도 실패 감지 후 자동 재시도 설계
+    - Kubernetes에선 NodeSelector/Tolerations으로 온디맨드 유지 영역 확보
+    - 데이터 저장 시점 분리: Long-running job이면 중간 결과 저장 필요 (delta, parquet 등으로 커밋)
 
